@@ -48,6 +48,8 @@ class BottleneckCSP(nn.Module):
         self.conv3 = nn.Conv2d(channels, channels, kernel_size=1, stride=1, bias=False)
         self.conv4 = CBR2d(in_channels, out_channels, kernel=1, stride=1)
         self.bn = nn.BatchNorm2d(in_channels)
+        self.bn.eps = 1e-4
+        self.bn.momentum = 0.03
         self.lrelu = nn.LeakyReLU(0.1, inplace=True)
         self.m = nn.Sequential(*[Bottleneck(channels, channels, shortcut, g, e=1.0) for i in range(num)])
 
