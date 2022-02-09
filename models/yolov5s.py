@@ -3,6 +3,46 @@ import torch.nn as nn
 
 from layers import CBR2d, Focus, SPP, BottleneckCSP, Concat
 
+class Detect(nn.Module):
+    def __init__(self, nc=2, anchor=()):
+        super(Detect, self).__init__()
+        self.stride = None
+        self.nc = nc  # number of classes
+        self.no = nc + 5  # anchor당 출력 수
+        self.nl = len(anchor)  # number of detection layers
+        self.na = len(anchor[0]) // 2  # number of anchors
+        self.grid = [torch.zeros(1)] * self.nl  # init grid
+        a = torch.tensor(anchor).float().view(self.nl, -1, 2)
+        self.register_buffer('anchors', a)
+        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))
+        self.export = False
+
+    def forward(self, x):
+        z = []
+        self.training |= self.export
+        for i in range(self.nl):
+            batch, _, ny, nx = x[i].shape
+            x[i] = x[i].view(batch, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+
+            if not self.training:
+                if self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
+
+                y = x[i].sigmoid()
+                y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x[i].device)) * self.stride[i]  # xy
+                y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                z.append(y.view(batch, -1, self.no))
+
+        return x if self.training else (torch.cat(z, 1), x)
+
+    @staticmethod
+    def _make_grid(nx=20, ny=20):
+        yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
+        return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
+
+
+
+
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, num_classes, num_anchors):
         super(Model, self).__init__()
