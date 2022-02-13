@@ -1,18 +1,31 @@
+import math
 import torch
 import torch.nn as nn
 
 from layers import CBR2d, Focus, SPP, BottleneckCSP, Concat
+from utils.model_utils import check_anchor_order
+
+anchor = [[10,13, 16,30, 33,23], [30,61, 62,45, 59,119], [116,90, 156,198, 373,326]]
+
+models_layer = [
+    [-1, 1, 'Focus', [32, 3]],
+    [-1, 1, 'Conv', [64, 3, 2]],
+    [-1, 1, 'BottleneckCSP', [64]],
+    [-1, 1, 'Conv', [128, 3, 2]],
+    [-1, 3, 'BottleneckCSP', [128]],
+    [-1, 1, 'Conv']
+]
 
 class Detect(nn.Module):
-    def __init__(self, nc=2, anchor=()):
+    def __init__(self, nc=3, anchors=()):
         super(Detect, self).__init__()
         self.stride = None
         self.nc = nc  # number of classes
         self.no = nc + 5  # anchor당 출력 수
-        self.nl = len(anchor)  # number of detection layers
-        self.na = len(anchor[0]) // 2  # number of anchors
+        self.nl = len(anchors)  # number of detection layers
+        self.na = len(anchors[0]) // 2  # number of anchors
         self.grid = [torch.zeros(1)] * self.nl  # init grid
-        a = torch.tensor(anchor).float().view(self.nl, -1, 2)
+        a = torch.tensor(anchors).float().view(self.nl, -1, 2)
         self.register_buffer('anchors', a)
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))
         self.export = False
@@ -35,17 +48,17 @@ class Detect(nn.Module):
 
         return x if self.training else (torch.cat(z, 1), x)
 
+
     @staticmethod
     def _make_grid(nx=20, ny=20):
         yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
         return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
 
-
-
 class Model(nn.Module):
-    def __init__(self, in_channels, out_channels, num_classes, num_anchors):
+    def __init__(self, in_channels, num_classes, num_anchors):
         super(Model, self).__init__()
+        self.save = list()
         # backbone
         self.focus = Focus(in_channels, 32, 3, 1, 1) # P1
         self.conv_1 = CBR2d(32, 64, 3, 2, 1) # P2
@@ -80,38 +93,58 @@ class Model(nn.Module):
         self.btneckCSP_8 = BottleneckCSP(512, 512, 1, shortcut=False)
         self.conv2d_3 = nn.Conv2d(512, (num_anchors * (num_classes + 5)), 1, 1) # P5
 
+        self.detect = Detect(nc=2, anchor=anchor)
+        self.detect.stride = torch.tensor([128 / x.shape[-2] for x in
+                                           self.forward(torch.zeros(1, in_channels, 128, 128))])
+        self.detect.anchors /= self.detect.stride.view(-1, 1, 1)
+        check_anchor_order(self.detect)
+        self.stride = self.detect.stride
+        self._initialize_biases()
+
+    def _initialize_biases(self, cf=None):
+        _from = [self.conv2d_1, self.conv2d_2, self.conv2d_3]
+        for mi, s in zip(_from, self.detect.stride):
+            b = mi.bias.view(self.detect.na, -1)  # conv2d.bias(255) to (3, 85)
+            b[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b[:, 5:] += math.log(0.6 / (self.detect.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
+            mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
+
     def forward(self, x):
         x = self.focus(x)
         x = self.conv_1(x)
         x = self.btneckCSP_1(x)
         x = self.conv_2(x)
-        c1 = self.btneckCSP_2(x)
-        x = self.conv_3(c1)
-        c2 = self.btneckCSP_3(x)
-        x = self.conv_4(c2)
+        x = self.btneckCSP_2(x)
+        self.save.append(x)
+        x = self.conv_3(x)
+        x = self.btneckCSP_3(x)
+        self.save.append(x)
+        x = self.conv_4(x)
         x = self.spp(x)
 
         x = self.btneckCSP_4(x)
-        c3 = self.conv_5(x)
-        x = self.upsample(c3)
-        x = self.concat((x, c2))
+        x = self.conv_5(x)
+        self.save.append(x)
+        x = self.upsample(x)
+        x = self.concat((x, self.save[-2]))
         x = self.btneckCSP_5(x)
 
-        c4 = self.conv_6(x)
-        x = self.upsample(c4)
-        x = self.concat((x, c1))
+        x = self.conv_6(x)
+        self.save.append(x)
+        x = self.upsample(x)
+        x = self.concat((x, self.save[-4]))
         x = self.btneckCSP_6(x)
         p1 = self.conv2d_1(x)
 
         x = self.conv_7(x)
-        x = self.concat(x, c4)
+        x = self.concat((x, self.save[-1]))
         x = self.btneckCSP_7(x)
         p2 = self.conv2d_2(x)
 
         x = self.conv_8(x)
-        x = self.concat(x, c3)
+        x = self.concat((x, self.save[-2]))
         x = self.btneckCSP_8(x)
         p3 = self.conv2d_3(x)
 
-
+        return self.detect((p1, p2, p3))
 
