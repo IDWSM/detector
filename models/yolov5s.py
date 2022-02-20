@@ -2,19 +2,10 @@ import math
 import torch
 import torch.nn as nn
 
-from layers import CBR2d, Focus, SPP, BottleneckCSP, Concat
+from models.layers import CBR2d, Focus, SPP, BottleneckCSP, Concat
 from utils.model_utils import check_anchor_order
 
 anchor = [[10,13, 16,30, 33,23], [30,61, 62,45, 59,119], [116,90, 156,198, 373,326]]
-
-models_layer = [
-    [-1, 1, 'Focus', [32, 3]],
-    [-1, 1, 'Conv', [64, 3, 2]],
-    [-1, 1, 'BottleneckCSP', [64]],
-    [-1, 1, 'Conv', [128, 3, 2]],
-    [-1, 3, 'BottleneckCSP', [128]],
-    [-1, 1, 'Conv']
-]
 
 class Detect(nn.Module):
     def __init__(self, nc=3, anchors=()):
@@ -56,44 +47,44 @@ class Detect(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, in_channels, num_classes, num_anchors):
+    def __init__(self, in_channels, num_classes, num_anchors=len(anchor[0])//2):
         super(Model, self).__init__()
         self.save = list()
         # backbone
-        self.focus = Focus(in_channels, 32, 3, 1, 1) # P1
-        self.conv_1 = CBR2d(32, 64, 3, 2, 1) # P2
+        self.focus = Focus(in_channels, 32, 3, 1, 1)  # P1
+        self.conv_1 = CBR2d(32, 64, 3, 2, 1)  # P2
         self.btneckCSP_1 = BottleneckCSP(64, 64, 1)
-        self.conv_2 = CBR2d(64, 128, 3, 2, 1) # P3
+        self.conv_2 = CBR2d(64, 128, 3, 2, 1)  # P3
         self.btneckCSP_2 = BottleneckCSP(128, 128, 3)
-        self.conv_3 = CBR2d(128, 256, 3, 2, 1) # P5
+        self.conv_3 = CBR2d(128, 256, 3, 2, 1)  # P5
         self.btneckCSP_3 = BottleneckCSP(256, 256, 3)
-        self.conv_4 = CBR2d(256, 512, 3, 2, 1) # P7
+        self.conv_4 = CBR2d(256, 512, 3, 2, 1)  # P7
         self.spp = SPP(512, 512, [5, 9, 13])
         # head
         self.btneckCSP_4 = BottleneckCSP(512, 512, 1, shortcut=False)
 
         self.conv_5 = CBR2d(512, 256, 1, 1)
         self.upsample = nn.Upsample(scale_factor=2)
-        self.concat = Concat(1) # backbone P4
+        self.concat = Concat(1)  # backbone P4
         self.btneckCSP_5 = BottleneckCSP(512, 256, 1, shortcut=False)
 
         self.conv_6 = CBR2d(256, 128, 1, 1)
         # upsample
         # concat backbone P3
         self.btneckCSP_6 = BottleneckCSP(256, 128, 1, shortcut=False)
-        self.conv2d_1 = nn.Conv2d(128, (num_anchors * (num_classes + 5)), 1, 1) # P3
+        self.conv2d_1 = nn.Conv2d(128, (num_anchors * (num_classes + 5)), 1, 1)  # P3
 
         self.conv_7 = CBR2d(128, 128, 3, 2, 1)
         # concat head P4
         self.btneckCSP_7 = BottleneckCSP(256, 256, 1, shortcut=False)
-        self.conv2d_2 = nn.Conv2d(256, (num_anchors * (num_classes + 5)), 1, 1) # P4
+        self.conv2d_2 = nn.Conv2d(256, (num_anchors * (num_classes + 5)), 1, 1)  # P4
 
         self.conv_8 = CBR2d(256, 256, 3, 2, 1)
         # concat head P5
         self.btneckCSP_8 = BottleneckCSP(512, 512, 1, shortcut=False)
-        self.conv2d_3 = nn.Conv2d(512, (num_anchors * (num_classes + 5)), 1, 1) # P5
+        self.conv2d_3 = nn.Conv2d(512, (num_anchors * (num_classes + 5)), 1, 1)  # P5
 
-        self.detect = Detect(nc=2, anchor=anchor)
+        self.detect = Detect(nc=3, anchors=anchor)
         self.detect.stride = torch.tensor([128 / x.shape[-2] for x in
                                            self.forward(torch.zeros(1, in_channels, 128, 128))])
         self.detect.anchors /= self.detect.stride.view(-1, 1, 1)
@@ -105,8 +96,8 @@ class Model(nn.Module):
         _from = [self.conv2d_1, self.conv2d_2, self.conv2d_3]
         for mi, s in zip(_from, self.detect.stride):
             b = mi.bias.view(self.detect.na, -1)  # conv2d.bias(255) to (3, 85)
-            b[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
-            b[:, 5:] += math.log(0.6 / (self.detect.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
+            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 5:] += math.log(0.6 / (self.detect.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
             mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
     def forward(self, x):
@@ -146,5 +137,8 @@ class Model(nn.Module):
         x = self.btneckCSP_8(x)
         p3 = self.conv2d_3(x)
 
-        return self.detect((p1, p2, p3))
+        return self.detect([p1, p2, p3])
 
+model = Model(num_classes=3, in_channels=3)
+
+y = model(torch.rand(1, 3, 640, 640))
