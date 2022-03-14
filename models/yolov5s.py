@@ -7,6 +7,7 @@ from utils.model_utils import check_anchor_order
 
 anchor = [[10,13, 16,30, 33,23], [30,61, 62,45, 59,119], [116,90, 156,198, 373,326]]
 
+
 class Detect(nn.Module):
     def __init__(self, nc=3, anchors=()):
         super(Detect, self).__init__()
@@ -138,7 +139,3 @@ class Model(nn.Module):
         p3 = self.conv2d_3(x)
 
         return self.detect([p1, p2, p3])
-
-model = Model(num_classes=3, in_channels=3)
-
-y = model(torch.rand(1, 3, 640, 640))

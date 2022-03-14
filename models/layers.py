@@ -3,9 +3,10 @@ import torch.nn as nn
 
 # Conv + batch norm + leakyReLU
 class CBR2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel, stride, padding=0, group=1,relu=True):
-        super.__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel, stride, padding, bias=False, groups=group)
+    def __init__(self, in_channels, out_channels, kernel, stride, padding=0, group=1, relu=True):
+        super(CBR2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel, stride=stride,
+                              padding=padding, bias=False, groups=group)
         self.bn = nn.BatchNorm2d(out_channels)
         self.lrelu = nn.LeakyReLU(0.1, inplace=True) if relu else nn.Identity()
 
@@ -23,9 +24,9 @@ class Bottleneck(nn.Module):
         :param e: expansion
         """
         super(Bottleneck, self).__init__()
-        channels = (out_channels * e)
-        self.conv1 = CBR2d(in_channels, channels, stride=1, kernel=1)
-        self.conv2 = CBR2d(channels, out_channels, stride=1, kernel=3, padding=1, group=g)
+        channels = int(out_channels * e)
+        self.conv1 = CBR2d(in_channels, channels, kernel=1, stride=1)
+        self.conv2 = CBR2d(channels, out_channels, kernel=3, stride=1, padding=1, group=g)
         self.add = shortcut and in_channels == out_channels
 
     def forward(self, x):
@@ -42,12 +43,12 @@ class BottleneckCSP(nn.Module):
         :param e: expansion
         """
         super(BottleneckCSP, self).__init__()
-        channels = (out_channels * e)
+        channels = int(out_channels * e)
         self.conv1 = CBR2d(in_channels, channels, kernel=1, stride=1)
         self.conv2 = nn.Conv2d(in_channels, channels, kernel_size=1, stride=1, bias=False)
         self.conv3 = nn.Conv2d(channels, channels, kernel_size=1, stride=1, bias=False)
-        self.conv4 = CBR2d(in_channels, out_channels, kernel=1, stride=1)
-        self.bn = nn.BatchNorm2d(in_channels)
+        self.conv4 = CBR2d(2 * channels, out_channels, kernel=1, stride=1)
+        self.bn = nn.BatchNorm2d(2 * channels)
         self.bn.eps = 1e-4
         self.bn.momentum = 0.03
         self.lrelu = nn.LeakyReLU(0.1, inplace=True)
@@ -68,7 +69,7 @@ class SPP(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.cv2(torch.cat([x] + [maxpool(x) for maxpool in self.max], 1))
+        x = self.conv2(torch.cat([x] + [maxpool(x) for maxpool in self.max], 1))
 
         return x
 
