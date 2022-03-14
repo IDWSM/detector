@@ -22,7 +22,7 @@ labels = ['with_mask', 'mask_weared_incorrect', 'without_mask']
 
 
 class Dataset(Dataset):
-    def __init__(self, data_dir, idx1, idx2, hyp, augment=None):
+    def __init__(self, data_dir, idx1, idx2, hyp=None, batch_size=16, augment=None, rect=None):
         super(Dataset, self).__init__()
         self.hyp = hyp
         img_files = [data_dir + '/images/' + img_file for img_file in os.listdir(os.path.join(data_dir, 'images'))
@@ -36,7 +36,8 @@ class Dataset(Dataset):
         self.ann_files = ann_files[split[idx1]:split[idx2]+split[idx1]]
         self.file_dir = data_dir
         self.augment = augment
-        self.mosaic_border = (-640 // 2, -640 // 2)
+        self.rect = rect
+        self.mosaic_border = [-640 // 2, -640 // 2]
         cache_path = str(Path(ann_files[0]).parent) + 'cache'
         if os.path.isfile(cache_path):
             cache = torch.load(cache_path)
@@ -49,6 +50,29 @@ class Dataset(Dataset):
         labels, shapes = zip(*[cache[x] for x in self.img_files])
         self.shapes = np.array(shapes, dtype=np.float64)
         self.labels = list(labels)
+
+        if self.rect:
+            bi = np.floor(np.arange(len(self.img_files)) / batch_size).astype(np.int)
+            nb = bi[-1] + 1
+
+            ar = self.shapes[:, 1] / self.shapes[:, 0]
+            irect = ar.argsort()
+            self.img_files = [self.img_files[i] for i in irect]
+            self.ann_files = [self.ann_files[i] for i in irect]
+            self.labels = [self.labels[i] for i in irect]
+            self.shapes = self.shapes[irect]
+            ar = ar[irect]
+
+            shapes = [[1, 1]] * nb
+            for i in range(nb):
+                ari = ar[bi == i]
+                mini, maxi = ari.min(), ari.max()
+                if maxi < 1:
+                    shapes[i] = [maxi, 1]
+                elif mini > 1:
+                    shapes[i] = [1, 1 / mini]
+
+            self.batch_shapes = np.ceil(np.array(shapes) * 640 / 32).astype(np.int) * 32  # 640 : img_size, 32 : stride
 
         gb = 0
         pbar = tqdm(range(len(self.img_files)), desc='caching image')
@@ -94,7 +118,3 @@ class Dataset(Dataset):
         data = {'image': torch.from_numpy(image), 'label': label_out}
 
         return data
-
-
-
-# 이미지 알부멘테이션 후 라벨 데이터 다시 전처리 pix2백분율
